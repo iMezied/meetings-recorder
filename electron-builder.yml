@@ -1,0 +1,21 @@
+appId: com.meetingrecorder.app
+productName: Meeting Recorder
+mac:
+  category: public.app-category.productivity
+  icon: assets/icon.icns
+  target: dmg
+  hardenedRuntime: false
+  extraResources:
+    - from: backend/
+      to: backend/
+      filter: ["**/*"]
+  extendInfo:
+    LSUIElement: true
+    NSMicrophoneUsageDescription: "Meeting Recorder needs microphone access to record meeting audio."
+    NSAppleEventsUsageDescription: "Meeting Recorder needs Automation access to detect Google Meet in your browser."
+directories:
+  output: dist
+  buildResources: assets
+files:
+  - electron/dist/**/*
+  - frontend/dist/**/*

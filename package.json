@@ -1,0 +1,18 @@
+{
+  "name": "meeting-recorder",
+  "version": "1.0.0",
+  "description": "Local-first meeting recording and analysis tool for macOS",
+  "main": "electron/dist/main.js",
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && python -m uvicorn app.main:app --reload --port 8765",
+    "dev:electron": "cd electron && npm run dev",
+    "build": "bash scripts/build.sh",
+    "setup": "bash scripts/setup.sh",
+    "postinstall": "cd frontend && npm install && cd ../electron && npm install"
+  },
+  "author": "",
+  "license": "MIT",
+  "private": true
+}
