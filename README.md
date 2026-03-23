@@ -1,265 +1,167 @@
 # Meeting Recorder
 
-A local-first, privacy-focused meeting recording and analysis tool for macOS. Runs as a menu bar app that automatically detects meetings (Zoom, Google Meet, Teams), records audio, transcribes with speaker diarization, and generates AI-powered summaries and sentiment analysis. All data stays on your device.
+Local-first meeting recording and analysis tool for macOS. Menu bar app that auto-detects Zoom/Meet/Teams calls, records audio, transcribes with speaker diarization (faster-whisper + pyannote), and generates AI summaries and sentiment analysis (Ollama). All data stays on your machine.
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Electron App (React)                      │
-│  Menu Bar Tray ─── Main Window (React + Tailwind)           │
-│  ┌──────────┐  ┌──────────────────────────────────────────┐ │
-│  │ Tray Menu │  │  Sidebar  │  Detail (4 tabs)            │ │
-│  │ Record    │  │  Search   │  Transcript (timestamped)   │ │
-│  │ Status    │  │  Filters  │  Summary + Action Items     │ │
-│  │ Library   │  │  Meetings │  Speaker Sentiment          │ │
-│  │ Settings  │  │  Preview  │  Info / Metadata            │ │
-│  └──────────┘  └──────────────────────────────────────────┘ │
-│                                                              │
-│  IPC Bridge (Electron ↔ Python via localhost HTTP)           │
-├──────────────────────────────────────────────────────────────┤
-│                    Python Backend (FastAPI)                   │
-│  ┌──────────────┐ ┌─────────────────┐ ┌──────────────────┐ │
-│  │ Audio Capture │ │ Meeting Detector│ │ faster-whisper   │ │
-│  │ sounddevice   │ │ psutil +        │ │ CTranslate2      │ │
-│  │ 16kHz WAV     │ │ AppleScript     │ │ large-v3 (Arabic)│ │
-│  └──────────────┘ └─────────────────┘ └──────────────────┘ │
-│  ┌──────────────┐ ┌─────────────────┐ ┌──────────────────┐ │
-│  │ pyannote-    │ │ Ollama Client   │ │ Storage          │ │
-│  │ audio        │ │ localhost:11434 │ │ SQLite + Files   │ │
-│  │ Speaker      │ │ qwen2.5         │ │ + Optional Sync  │ │
-│  │ Diarization  │ │ Summary/Sentim. │ │                  │ │
-│  └──────────────┘ └─────────────────┘ └──────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Stack
-
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| Desktop shell | Electron | Menu bar tray app, window management, IPC bridge |
-| Frontend | React 19 + Tailwind CSS 4 | Library UI, settings panel, dark theme |
-| State management | Zustand | Lightweight store, no boilerplate |
-| Backend | Python FastAPI | REST API + SSE for real-time events |
-| Audio capture | sounddevice + soundfile | 16kHz mono WAV recording |
-| Meeting detection | psutil + AppleScript | Zoom, Teams, Google Meet auto-detection |
-| Transcription | faster-whisper (CTranslate2) | 4x faster than whisper.cpp, Metal acceleration on Apple Silicon |
-| Speaker diarization | pyannote-audio 3.1 | Voice-based speaker identification |
-| LLM analysis | Ollama (qwen2.5) | Meeting summaries, action items, sentiment analysis |
-| Database | SQLite (WAL mode) + FTS5 | Structured queries, full-text transcript search |
-| Sync | File-based (iCloud / folder / Syncthing) | Optional multi-device sync |
-
-### Project Structure
+## How It Works
 
 ```
-meeting-recorder/
-├── electron/                   # Electron shell
-│   └── src/
-│       ├── main.ts             # Main process (tray, window, backend lifecycle)
-│       ├── preload.ts          # Context bridge (IPC)
-│       └── tray.ts             # Menu bar tray setup
-├── frontend/                   # React app
-│   └── src/
-│       ├── App.tsx             # Root layout
-│       ├── components/         # UI components (12 files)
-│       │   ├── TopBar.tsx      # Title bar, record/monitor controls
-│       │   ├── Sidebar.tsx     # Meeting list, search, filters
-│       │   ├── DetailView.tsx  # Tab container
-│       │   ├── TranscriptTab.tsx
-│       │   ├── SummaryTab.tsx
-│       │   ├── SentimentTab.tsx
-│       │   ├── InfoTab.tsx
-│       │   ├── SettingsView.tsx # 5-tab settings panel
-│       │   └── ModelManager.tsx # Whisper model download GUI
-│       ├── hooks/
-│       │   ├── useBackend.ts   # HTTP + SSE client for Python API
-│       │   └── useStore.ts     # Zustand global state
-│       └── types/
-│           └── index.ts        # TypeScript interfaces
-├── backend/                    # Python FastAPI
-│   └── app/
-│       ├── main.py             # FastAPI app, SSE event bus, lifespan
-│       ├── config.py           # Settings, device ID, persistent config
-│       ├── models.py           # Pydantic schemas (camelCase JSON)
-│       ├── routers/            # API endpoints
-│       │   ├── recording.py    # Start/stop/status
-│       │   ├── transcription.py # Transcribe, model management
-│       │   ├── analysis.py     # Summary + sentiment via Ollama
-│       │   ├── meetings.py     # CRUD, transcript/summary/sentiment retrieval
-│       │   └── sync.py         # Multi-device sync
-│       ├── services/           # Business logic
-│       │   ├── audio_service.py
-│       │   ├── detector_service.py
-│       │   ├── transcription_service.py
-│       │   ├── ollama_service.py
-│       │   ├── storage_service.py
-│       │   └── sync_service.py
-│       └── db/
-│           ├── database.py     # Async SQLAlchemy + SQLite WAL
-│           └── models.py       # ORM models (UUID primary keys)
-├── scripts/
-│   ├── setup.sh                # Install all dependencies
-│   ├── dev.sh                  # Run backend + frontend + Electron
-│   └── build.sh                # Package into .app / .dmg
-└── sync/
-    └── README.md               # Multi-device sync setup guide
+Electron (menu bar tray + React UI)
+       │
+       │  HTTP + SSE on localhost:8765
+       ▼
+Python FastAPI backend
+       │
+       ├─ sounddevice ──────────► 16kHz WAV recording
+       ├─ psutil + AppleScript ─► meeting auto-detection
+       ├─ faster-whisper ───────► transcription (Metal GPU)
+       ├─ pyannote-audio ──────► speaker diarization
+       ├─ Ollama (qwen2.5) ────► summaries + sentiment
+       └─ SQLite + FTS5 ───────► storage + full-text search
 ```
+
+The Electron app spawns the Python backend as a child process on launch, finds a free port, and waits for the `/health` endpoint before showing the UI. The React frontend talks to the backend over HTTP; real-time events (audio levels, transcription progress, meeting detection) stream via SSE.
 
 ## Prerequisites
 
-- **macOS** (Apple Silicon or Intel)
-- **Node.js** 18+
-- **Python** 3.11+
-- **Ollama** (for AI analysis) — optional but recommended
+| Requirement | Install |
+|-------------|---------|
+| macOS (Apple Silicon or Intel) | — |
+| Node.js 18+ | `brew install node` |
+| Python 3.11+ | `brew install python@3.11` |
+| Ollama (optional, for AI analysis) | `brew install ollama && ollama pull qwen2.5` |
 
-## Setup
+## Quick Start
 
 ```bash
-# Clone the repository
 git clone <repo-url> && cd meeting-recorder
 
-# Run the setup script (installs Node + Python dependencies, creates app directories)
+# 1. Install everything (Node deps + Python venv + app directories)
 ./scripts/setup.sh
+
+# 2. Run all three services together
+npm run dev
 ```
 
-The setup script will:
-1. Verify Node.js and Python are installed
-2. Install frontend npm dependencies
-3. Install Electron npm dependencies
-4. Create a Python virtual environment and install backend packages
-5. Create `~/Library/Application Support/MeetingRecorder/` directories
+That's it. `npm run dev` starts:
+1. **Python backend** on `http://localhost:8765` (waits for health check)
+2. **React dev server** on `http://localhost:5173` (Vite HMR)
+3. **Electron app** (loads the React UI, connects to the backend)
 
-### Optional Setup
+The app appears as a menu bar icon — there's no Dock icon.
 
-```bash
-# Install Ollama for AI-powered summaries and sentiment analysis
-brew install ollama
-ollama pull qwen2.5
+### Running Services Individually
 
-# Install BlackHole for system audio capture (records app audio, not just mic)
-brew install blackhole-2ch
-# Then create an Aggregate Device in Audio MIDI Setup combining your mic + BlackHole
-
-# Get a HuggingFace token for speaker diarization (pyannote-audio)
-# 1. Create account at https://huggingface.co
-# 2. Accept the model license at https://huggingface.co/pyannote/speaker-diarization-3.1
-# 3. Generate a token at https://huggingface.co/settings/tokens
-# 4. Enter it in Settings > Transcription in the app
-```
-
-## Development
+If you need to restart just one part:
 
 ```bash
-# Start all services (backend on :8765, frontend on :5173, then Electron)
+# Terminal 1 — backend
+cd backend
+source venv/bin/activate
+python -m uvicorn app.main:app --reload --port 8765
+
+# Terminal 2 — frontend
+cd frontend
 npm run dev
 
-# Or run each component individually:
-npm run dev:backend    # Python FastAPI on http://localhost:8765
-npm run dev:frontend   # React dev server on http://localhost:5173
-npm run dev:electron   # Electron app (requires backend + frontend running)
+# Terminal 3 — electron
+cd electron
+npm run dev
 ```
 
-The dev script starts the Python backend first, waits for its health check to pass, then launches the React dev server and Electron.
-
-## Build
+## Building for Distribution
 
 ```bash
-# Package into a macOS .dmg
 npm run build
 ```
 
-This builds the React frontend, compiles the Electron TypeScript, and packages everything into a distributable `.app` using electron-builder. The Python backend is bundled inside the app resources.
+This runs three steps:
+1. `cd frontend && npm run build` — Vite bundles the React app to `frontend/dist/`
+2. `cd electron && npm run build` — TypeScript compiles to `electron/dist/`
+3. `npx electron-builder --mac` — packages everything into a `.dmg`
 
-## Usage
+The Python backend is bundled inside the `.app` under `Resources/backend/`. On launch, Electron spawns `venv/bin/python -m uvicorn app.main:app` from that directory.
 
-### Recording
+Output: `dist/Meeting Recorder-*.dmg`
 
-The app runs as a **menu bar icon** (no Dock icon). Click the tray icon to:
+### What Gets Bundled
 
-- **Start/Stop Recording** — manually control audio capture
-- **Toggle Monitoring** — auto-detect meetings and start recording
-- **Open Library** — browse and search all recorded meetings
-- **Settings** — configure audio devices, models, sync
+```
+Meeting Recorder.app/
+└── Contents/
+    └── Resources/
+        ├── frontend/dist/     # Built React app (served via file://)
+        ├── electron/dist/     # Compiled Electron main + preload
+        └── backend/           # Full Python backend + venv
+            ├── app/
+            ├── venv/
+            └── requirements.txt
+```
 
-### Automatic Meeting Detection
+## Setup Details
 
-When monitoring is enabled, the app polls every 3 seconds for:
-- **Zoom** — detects `zoom.us` or `CptHost` processes
-- **Microsoft Teams** — detects `Microsoft Teams` or `MSTeams` processes
-- **Google Meet** — queries Chrome, Safari, or Arc for `meet.google.com` tabs via AppleScript
+### `./scripts/setup.sh` Does the Following
 
-Recording starts automatically when a meeting is detected and stops ~6 seconds after the meeting ends (2-poll debounce).
+1. Checks that `node` and `python3` are installed
+2. Runs `npm install` in `frontend/` and `electron/`
+3. Creates `backend/venv` and runs `pip install -r requirements.txt`
+4. Creates `~/Library/Application Support/MeetingRecorder/{recordings,models}`
 
-### Analysis Pipeline
+### Optional: Speaker Diarization
 
-After recording, click **Analyze** on a meeting to run:
+To get speaker labels (who said what), you need a HuggingFace token for pyannote-audio:
 
-1. **Transcription** — faster-whisper converts audio to timestamped text segments (auto-detects language, uses large-v3 for Arabic)
-2. **Speaker Diarization** — pyannote-audio identifies distinct speakers by voice fingerprint (requires HuggingFace token)
-3. **Summary** — Ollama generates title, key points, action items, decisions, and open questions
-4. **Sentiment** — Ollama analyzes per-speaker tone, engagement, and communication style
+1. Sign up at https://huggingface.co
+2. Accept the license at https://huggingface.co/pyannote/speaker-diarization-3.1
+3. Create a token at https://huggingface.co/settings/tokens
+4. Enter it in the app under Settings > Transcription
 
-### Multi-Device Sync
+### Optional: System Audio Capture
 
-Record on one MacBook, review on another. See [sync/README.md](sync/README.md) for setup options:
+To record meeting audio (not just your mic), install BlackHole:
 
-- **iCloud Drive** — zero setup, automatic sync
-- **Shared folder** — NAS or SMB mount
-- **Syncthing** — peer-to-peer, no cloud
+```bash
+brew install blackhole-2ch
+```
 
-Each device maintains its own SQLite database, rebuilt from synced JSON metadata. Audio files are large (~115 MB/hour) so only metadata and transcripts sync by default.
+Then open Audio MIDI Setup, create an Aggregate Device combining your mic + BlackHole, and select it in Settings > Audio.
 
-## API Reference
+## Project Structure
 
-The Python backend exposes a REST API on `http://localhost:8765`:
+```
+meeting-recorder/
+├── frontend/          React 19 + Tailwind 4 + Zustand (Vite build)
+├── electron/          Electron main process + tray (TypeScript)
+├── backend/           Python FastAPI (audio, detection, ML, storage)
+│   └── app/
+│       ├── main.py        FastAPI app, SSE event bus
+│       ├── routers/       API endpoints (recording, meetings, transcription, analysis, sync)
+│       ├── services/      Business logic (audio, detector, whisper, ollama, storage, sync)
+│       └── db/            SQLAlchemy + SQLite (WAL mode, FTS5)
+├── scripts/
+│   ├── setup.sh       Install all dependencies
+│   ├── dev.sh         Start backend + frontend + Electron together
+│   └── build.sh       Build and package into .dmg
+└── sync/
+    └── README.md      Multi-device sync setup (iCloud / NAS / Syncthing)
+```
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/api/events` | SSE stream for real-time events |
-| POST | `/api/recording/start` | Start audio recording |
-| POST | `/api/recording/stop` | Stop recording |
-| GET | `/api/recording/status` | Recording state, duration, audio level |
-| POST | `/api/detector/start` | Start meeting monitoring |
-| POST | `/api/detector/stop` | Stop monitoring |
-| GET | `/api/detector/status` | Monitoring state, detected meeting |
-| GET | `/api/meetings` | List meetings (`?source=zoom&search=keyword`) |
-| GET | `/api/meetings/{id}` | Get meeting details |
-| DELETE | `/api/meetings/{id}` | Soft-delete a meeting |
-| GET | `/api/meetings/{id}/transcript` | Get transcript |
-| GET | `/api/meetings/{id}/summary` | Get summary |
-| GET | `/api/meetings/{id}/sentiment` | Get sentiment analysis |
-| POST | `/api/transcribe/{id}` | Trigger transcription |
-| POST | `/api/analyze/{id}` | Run summary + sentiment |
-| GET | `/api/models` | List whisper models |
-| POST | `/api/models/download` | Download a whisper model |
-| GET | `/api/ollama/status` | Check Ollama availability |
-| GET | `/api/settings` | Get app settings |
-| PUT | `/api/settings` | Update settings |
-| GET | `/api/audio/devices` | List input audio devices |
-| GET | `/api/sync/status` | Sync state |
-| POST | `/api/sync/push` | Push to sync directory |
-| POST | `/api/sync/pull` | Pull from sync directory |
-| POST | `/api/sync/configure` | Configure sync method |
+## Data Location
 
-## Data Storage
-
-All data is stored locally in `~/Library/Application Support/MeetingRecorder/`:
+All app data lives in `~/Library/Application Support/MeetingRecorder/`:
 
 ```
 MeetingRecorder/
-├── meetings.db              # SQLite database (WAL mode)
-├── device.json              # Unique device ID
-├── settings.json            # Persistent user settings
-├── models/                  # Downloaded whisper models
-│   └── large-v3/            # CTranslate2 model directory
+├── meetings.db           SQLite database
+├── settings.json         User preferences
+├── device.json           Unique device ID (for sync)
+├── models/               Downloaded whisper models
 └── recordings/
     └── 2026-03-23/
         └── zoom-143022/
-            ├── audio.wav        # Raw recording
-            ├── transcript.json  # Timestamped segments with speakers
-            ├── summary.json     # Key points, actions, decisions
-            └── sentiment.json   # Per-speaker analysis
+            ├── audio.wav
+            ├── transcript.json
+            ├── summary.json
+            └── sentiment.json
 ```
 
 ## License
